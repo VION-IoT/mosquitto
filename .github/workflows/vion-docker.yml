@@ -15,12 +15,11 @@ on:
   push:
     tags:
       - 'v*-vion.*'
+  # Dispatch is build-only validation. It deliberately takes no `push` input: on a branch ref the
+  # tag set would be empty, so a dispatched publish could only ever produce an untagged manifest or
+  # something arbitrary in a public repository. Publishing happens from a `v*-vion.*` tag or not at
+  # all.
   workflow_dispatch:
-    inputs:
-      push:
-        description: 'Push to Docker Hub (otherwise build only, to validate the Dockerfile)'
-        type: boolean
-        default: false
 
 env:
   DOCKERHUB_IMAGE: vioniot/mosquitto
@@ -49,7 +48,7 @@ jobs:
       contents: read
     env:
       HAVE_DOCKERHUB: ${{ secrets.DOCKERHUB_PAT != '' && secrets.DOCKERHUB_USERNAME != '' }}
-      DO_PUSH: ${{ (secrets.DOCKERHUB_PAT != '' && secrets.DOCKERHUB_USERNAME != '') && (github.event_name == 'push' || inputs.push) }}
+      DO_PUSH: ${{ (secrets.DOCKERHUB_PAT != '' && secrets.DOCKERHUB_USERNAME != '') && github.event_name == 'push' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -102,7 +101,7 @@ jobs:
     permissions:
       contents: read
     env:
-      DO_PUSH: ${{ (secrets.DOCKERHUB_PAT != '' && secrets.DOCKERHUB_USERNAME != '') && (github.event_name == 'push' || inputs.push) }}
+      DO_PUSH: ${{ (secrets.DOCKERHUB_PAT != '' && secrets.DOCKERHUB_USERNAME != '') && github.event_name == 'push' }}
     steps:
       - name: Nothing to merge
         if: env.DO_PUSH != 'true'
@@ -154,6 +153,10 @@ jobs:
           done <<< "${{ steps.meta.outputs.tags }}"
           if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
             TAGS="$TAGS -t ${{ env.DOCKERHUB_IMAGE }}:latest"
+          fi
+          if [ -z "$TAGS" ]; then
+            echo "No tags were computed for ref ${{ github.ref }}; refusing to push an untagged manifest." >&2
+            exit 1
           fi
           # shellcheck disable=SC2086
           docker buildx imagetools create $TAGS \
