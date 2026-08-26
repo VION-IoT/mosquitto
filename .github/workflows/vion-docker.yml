@@ -2,11 +2,10 @@
 # from Actions on VION's self-hosted runners, using this repository's DOCKERHUB_USERNAME and
 # DOCKERHUB_PAT secrets, never from a developer machine.
 #
-# Each architecture is built on matching silicon rather than emulated on one host: amd64 on the
-# x64 runners, arm64 on the RPi5 runners. Only arm/v7 needs binfmt, and it runs on an arm64 host
-# where 32-bit ARM is close to native rather than fully emulated. The legs push by digest and a
-# final job assembles the manifest list, which is the only way to build a multi-arch image across
-# several machines.
+# amd64 and arm64 build on matching silicon rather than being emulated on one host: amd64 on the
+# x64 runners, arm64 natively on the RPi5 runners. Only arm/v7 still needs binfmt, on an x64 host.
+# The legs push by digest and a final job assembles the manifest list, which is the only way to
+# build a multi-arch image across several machines.
 #
 # Only VION release tags trigger a publish. Upstream tags fetched into this fork (v2.1.2, v2.1.1,
 # ...) do not match `v*-vion.*` and can never publish anything.
@@ -38,8 +37,12 @@ jobs:
           - platform: linux/arm64
             runs_on: '["self-hosted", "Linux", "ARM64"]'
             needs_qemu: false
+          # arm/v7 emulated on the x64 runners, NOT on the ARM64 ones. 32-bit ARM under
+          # qemu-user on an aarch64 host segfaults immediately here - `apk add` dies with
+          # exit 139 - which is a well known bad combination with musl. x86_64 -> arm is the
+          # well-trodden path and is what the first published build used.
           - platform: linux/arm/v7
-            runs_on: '["self-hosted", "Linux", "ARM64"]'
+            runs_on: '["self-hosted", "Linux", "X64"]'
             needs_qemu: true
     runs-on: ${{ fromJSON(matrix.runs_on) }}
     permissions:
