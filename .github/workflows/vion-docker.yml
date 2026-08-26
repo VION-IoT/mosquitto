@@ -84,17 +84,20 @@ jobs:
       - name: Record the digest
         if: env.DO_PUSH == 'true'
         run: |
-          mkdir -p /tmp/digests
+          # RUNNER_TEMP, not a shared /tmp path: these runners are persistent, and marker files
+          # from an earlier run survived there and got picked up alongside this run's own.
+          rm -rf "${{ runner.temp }}/digests"
+          mkdir -p "${{ runner.temp }}/digests"
           # The bare hex only: upload-artifact rejects a filename containing a colon, and the merge
           # job puts the "sha256:" back when it reassembles the references.
           digest='${{ steps.build.outputs.digest }}'
-          touch "/tmp/digests/${digest#sha256:}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
 
       - uses: actions/upload-artifact@v4
         if: env.DO_PUSH == 'true'
         with:
           name: digest-${{ steps.p.outputs.slug }}
-          path: /tmp/digests/*
+          path: ${{ runner.temp }}/digests/*
           retention-days: 1
           if-no-files-found: error
 
@@ -129,7 +132,7 @@ jobs:
       - uses: actions/download-artifact@v4
         if: env.DO_PUSH == 'true'
         with:
-          path: /tmp/digests
+          path: ${{ runner.temp }}/digests
           pattern: digest-*
           merge-multiple: true
 
@@ -148,7 +151,7 @@ jobs:
       # is added explicitly here, and only ever from a real tag push.
       - name: Create the manifest list
         if: env.DO_PUSH == 'true'
-        working-directory: /tmp/digests
+        working-directory: ${{ runner.temp }}/digests
         run: |
           TAGS=""
           while read -r t; do
