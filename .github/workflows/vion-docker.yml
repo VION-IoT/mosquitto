@@ -66,7 +66,16 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.tags }}
             ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:latest', env.DOCKERHUB_IMAGE) || '' }}
-          labels: ${{ steps.meta.outputs.labels }}
+          # docker/metadata-action derives labels from the GitHub repository, which for a fork
+          # means upstream's description and licenses=NOASSERTION, and those override the
+          # Dockerfile's own LABELs. Restate the accurate ones after it; later labels win.
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.title=vioniot/mosquitto
+            org.opencontainers.image.description=Eclipse Mosquitto 2.1.2 with four upstream Windows signal fixes backported (517ea607, 4cf0eb29, 8a67d1bb, 24c72a61). Same broker version as the VION Windows gateway.
+            org.opencontainers.image.licenses=EPL-2.0 OR BSD-3-Clause
+            org.opencontainers.image.vendor=VION IoT
+            org.opencontainers.image.url=https://github.com/VION-IoT/mosquitto/releases/tag/v2.1.2-vion.1
 
       - name: Summary
         run: |
