@@ -1,0 +1,4 @@
+.git
+build-win-x64
+build-variant
+docker/*/mosq.tar.gz
