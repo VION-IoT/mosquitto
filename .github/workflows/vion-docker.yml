@@ -85,7 +85,10 @@ jobs:
         if: env.DO_PUSH == 'true'
         run: |
           mkdir -p /tmp/digests
-          touch "/tmp/digests/${{ steps.build.outputs.digest }}"
+          # The bare hex only: upload-artifact rejects a filename containing a colon, and the merge
+          # job puts the "sha256:" back when it reassembles the references.
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
 
       - uses: actions/upload-artifact@v4
         if: env.DO_PUSH == 'true'
