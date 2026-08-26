@@ -561,15 +561,14 @@ int main(int argc, char *argv[])
 		return rc;
 	}
 
+	g_run = 1;
+	signal__setup();
 
 #ifdef WITH_BRIDGE
 	bridge__start_all();
 #endif
 
 	broker_control__init();
-
-	g_run = 1;
-	signal__setup();
 
 	log__printf(NULL, MOSQ_LOG_INFO, "mosquitto version %s running", VERSION);
 #ifdef WITH_SYSTEMD
