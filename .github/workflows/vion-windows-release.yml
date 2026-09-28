@@ -61,9 +61,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # MINGW64 (msvcrt), as the published build was. setup-msys2 flags it as deprecated in favour
+      # of UCRT64; moving C runtime is a change to the shipped binaries, not to their packaging.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          suppress-deprecation-warnings: msystem-mingw64
           update: true
           install: >-
             mingw-w64-x86_64-gcc
@@ -85,7 +88,8 @@ jobs:
 
       # -Wno-error=incompatible-pointer-types: src/net.c passes an int* to Winsock's setsockopt,
       # which GCC 14+ rejects and MSVC only warns about. WITH_CTRL_SHELL=OFF: the interactive
-      # shell needs arpa/inet.h and readline, neither of which exists on Windows.
+      # shell needs arpa/inet.h and readline, neither of which exists on Windows. The plugins that are
+      # not shipped are not built either; persist-sqlite would otherwise require SQLite3.
       - name: Configure
         run: |
           cmake -S . -B build-win-x64 -G Ninja \
@@ -93,6 +97,7 @@ jobs:
             -DWITH_TLS=ON -DWITH_DOCS=OFF -DWITH_TESTS=OFF \
             -DWITH_BROKER=ON -DWITH_CLIENTS=ON -DWITH_APPS=ON -DWITH_PLUGINS=ON \
             -DWITH_CTRL_SHELL=OFF \
+            -DWITH_PLUGIN_PERSIST_SQLITE=OFF -DWITH_PLUGIN_SPARKPLUG_AWARE=OFF -DWITH_PLUGIN_EXAMPLES=OFF \
             -DPThreads4W_DIR="$(cygpath -m "$RUNNER_TEMP/pthreads4w")" \
             -DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types'
 
