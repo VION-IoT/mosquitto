@@ -176,7 +176,7 @@ jobs:
 
       - name: Version
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
             version="dev-${GITHUB_SHA::7}"
@@ -215,8 +215,9 @@ jobs:
             ${{ env.ARCHIVE }}.sha256
           if-no-files-found: error
 
+      # A tag push only: a dispatch run on a tag ref would otherwise replace the published asset.
       - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         # --repo because the job checks nothing out: `gh` otherwise resolves the repository from a git
