@@ -59,6 +59,11 @@ jobs:
         shell: msys2 {0}
 
     steps:
+      # Windows runners check text out as CRLF; the licence files ship as the repository holds them.
+      - name: Keep LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v6
 
       # MINGW64 (msvcrt), as the published build was. setup-msys2 flags it as deprecated in favour
@@ -105,7 +110,9 @@ jobs:
         run: cmake --build build-win-x64 --parallel
 
       # Each payload file comes from the repository root (licences), the build tree (our binaries)
-      # or the MINGW64 prefix (third-party runtime DLLs), and must be found exactly once.
+      # or the MINGW64 prefix (third-party runtime DLLs), and must be found exactly once. Our
+      # binaries are stripped of their symbol table, as the published ones were; the MINGW64 DLLs
+      # already are and are copied untouched.
       - name: Stage the payload
         run: |
           stage=stage/win-x64
@@ -124,6 +131,7 @@ jobs:
               src="${hits[0]}"
             fi
             cp "$src" "$stage/$f"
+            case "$src" in build-win-x64/*) strip "$stage/$f" ;; esac
             echo "$f <- $src"
           done
 
