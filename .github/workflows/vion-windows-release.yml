@@ -1,0 +1,220 @@
+# Builds the VION Windows broker and attaches it to the GitHub release as
+# mosquitto-<version>-win-x64.zip and mosquitto-<version>-win-x64.zip.sha256, the same asset shape
+# mesh publishes: every file flat at the archive root, and a sha256sum-format checksum with LF line
+# endings so `sha256sum -c` verifies it on Linux.
+#
+# The toolchain is MSYS2 MINGW64, not the MSVC + vcpkg build in windows.yml, because the first
+# release (v2.1.2-vion.1) was built that way and its consumers (artifacts-mender's
+# vion-gateway-suite-windows bundle) take the payload as published: MinGW names its runtime DLLs
+# differently (libcjson-1.dll, libwinpthread-1.dll) and an MSVC build would change the file set.
+# The recipe, including the three MinGW accommodations below, is the one in the v2.1.2-vion.1
+# release notes.
+#
+# Only VION release tags attach anything. Upstream tags fetched into this fork (v2.1.2, v2.1.1,
+# ...) do not match `v*-vion.*`. Pull requests and dispatch build, package and verify the same
+# archive under a dev version and keep it as a workflow artifact only.
+name: vion windows release
+
+on:
+  push:
+    tags:
+      - 'v*-vion.*'
+  pull_request:
+    branches:
+      - release/**
+  workflow_dispatch:
+
+env:
+  # The whole payload, one file per line. The build stages exactly these and the package job
+  # refuses an archive that holds anything else, so the shape cannot drift. It is the published
+  # v2.1.2-vion.1 file set minus upstream's sample mosquitto.conf: the gateway writes its own.
+  PAYLOAD: |
+    mosquitto.exe
+    mosquitto_ctrl.exe
+    mosquitto_passwd.exe
+    mosquitto_pub.exe
+    mosquitto_rr.exe
+    mosquitto_signal.exe
+    mosquitto_sub.exe
+    libmosquitto.dll
+    libmosquitto_common.dll
+    mosquitto_acl_file.dll
+    mosquitto_dynamic_security.dll
+    mosquitto_password_file.dll
+    libcjson-1.dll
+    libcrypto-3-x64.dll
+    libssl-3-x64.dll
+    libwinpthread-1.dll
+    LICENSE.txt
+    edl-v10
+    epl-v20
+
+jobs:
+  build-win-x64:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-cjson
+
+      # CMakeLists.txt requires find_package(PThreads4W) on WIN32. MinGW-w64 brings its own
+      # pthreads (winpthreads), so hand CMake a config that maps the target onto it.
+      - name: PThreads4W shim
+        run: |
+          mkdir -p "$RUNNER_TEMP/pthreads4w"
+          cat > "$RUNNER_TEMP/pthreads4w/PThreads4WConfig.cmake" <<'EOF'
+          add_library(PThreads4W::PThreads4W INTERFACE IMPORTED)
+          set_target_properties(PThreads4W::PThreads4W PROPERTIES INTERFACE_LINK_LIBRARIES "winpthread")
+          set(PThreads4W_FOUND TRUE)
+          EOF
+
+      # -Wno-error=incompatible-pointer-types: src/net.c passes an int* to Winsock's setsockopt,
+      # which GCC 14+ rejects and MSVC only warns about. WITH_CTRL_SHELL=OFF: the interactive
+      # shell needs arpa/inet.h and readline, neither of which exists on Windows.
+      - name: Configure
+        run: |
+          cmake -S . -B build-win-x64 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWITH_TLS=ON -DWITH_DOCS=OFF -DWITH_TESTS=OFF \
+            -DWITH_BROKER=ON -DWITH_CLIENTS=ON -DWITH_APPS=ON -DWITH_PLUGINS=ON \
+            -DWITH_CTRL_SHELL=OFF \
+            -DPThreads4W_DIR="$(cygpath -m "$RUNNER_TEMP/pthreads4w")" \
+            -DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types'
+
+      - name: Build
+        run: cmake --build build-win-x64 --parallel
+
+      # Each payload file comes from the repository root (licences), the build tree (our binaries)
+      # or the MINGW64 prefix (third-party runtime DLLs), and must be found exactly once.
+      - name: Stage the payload
+        run: |
+          stage=stage/win-x64
+          mkdir -p "$stage"
+          for f in $PAYLOAD; do
+            if [ -f "$f" ]; then
+              src="$f"
+            elif [ -f "/mingw64/bin/$f" ]; then
+              src="/mingw64/bin/$f"
+            else
+              mapfile -t hits < <(find build-win-x64 -name "$f" -type f -not -path '*/CMakeFiles/*')
+              if [ "${#hits[@]}" -ne 1 ]; then
+                echo "::error::$f: expected exactly one match in the build tree, found ${#hits[@]}: ${hits[*]}"
+                exit 1
+              fi
+              src="${hits[0]}"
+            fi
+            cp "$src" "$stage/$f"
+            echo "$f <- $src"
+          done
+
+      # A DLL missing from the payload can hide on a machine that happens to have it on PATH, so
+      # check the import tables instead: anything a staged binary imports that MINGW64 ships must
+      # be staged too. What remains is Windows' own system DLLs.
+      - name: Check every non-system import is in the payload
+        run: |
+          missing=0
+          for bin in stage/win-x64/*.exe stage/win-x64/*.dll; do
+            for dll in $(objdump -p "$bin" | sed -n 's/^\s*DLL Name: //p'); do
+              if [ -e "/mingw64/bin/$dll" ] && [ ! -e "stage/win-x64/$dll" ]; then
+                echo "::error::$(basename "$bin") imports $dll, which is not in the payload"
+                missing=1
+              fi
+            done
+          done
+          exit $missing
+
+      # A PATH of System32 alone, so the broker can load only what the payload itself provides. A
+      # missing DLL stops it before main() with no output; -h prints the version and exits non-zero.
+      - name: Smoke-test the staged broker outside MSYS2
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $out = & stage/win-x64/mosquitto.exe -h 2>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch 'mosquitto version') { throw "mosquitto.exe did not start from the staged payload (exit $LASTEXITCODE)" }
+          exit 0
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: mosquitto_win-x64_staged
+          path: stage/win-x64
+          if-no-files-found: error
+
+  package-win-x64:
+    needs: build-win-x64
+    # GitHub-hosted Linux, as in mesh: `gh` is preinstalled, and the checksum is verified with the
+    # same `sha256sum -c` a consumer runs, so a CRLF or UTF-16 .sha256 fails here and not there.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: mosquitto_win-x64_staged
+          path: stage/win-x64
+
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="dev-${GITHUB_SHA::7}"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version: $version"
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $archive = "mosquitto-$env:VERSION-win-x64.zip"
+          # The /* zips the directory's contents, so every file sits at the archive root.
+          Compress-Archive -Path stage/win-x64/* -DestinationPath $archive
+          # sha256sum's own format, so the hash can be verified with `sha256sum -c` on Linux.
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
+          "$hash  $archive`n" | Out-File -FilePath "$archive.sha256" -Encoding ascii -NoNewline
+          Write-Host "$hash  $archive"
+          "ARCHIVE=$archive" | Out-File $env:GITHUB_ENV -Append
+
+      - name: Verify the asset shape
+        run: |
+          sha256sum -c "$ARCHIVE.sha256"
+          if grep -q $'\r' "$ARCHIVE.sha256"; then
+            echo "::error::$ARCHIVE.sha256 contains CR bytes"; exit 1
+          fi
+          [ "$(wc -l < "$ARCHIVE.sha256")" -eq 1 ] || { echo "::error::$ARCHIVE.sha256 is not exactly one line"; exit 1; }
+          # zipinfo -1 prints entry paths, so a wrapping directory would show as a prefix.
+          diff -u <(printf '%s' "$PAYLOAD" | sort) <(zipinfo -1 "$ARCHIVE" | sort) \
+            || { echo "::error::$ARCHIVE does not hold exactly the payload, flat at its root"; exit 1; }
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: mosquitto-${{ env.VERSION }}-win-x64
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # --repo because the job checks nothing out: `gh` otherwise resolves the repository from a git
+        # remote and dies with `not a git repository` before uploading anything. --clobber so a re-run
+        # of the same tag replaces the asset instead of failing.
+        run: gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" "$ARCHIVE.sha256" --repo "$GITHUB_REPOSITORY" --clobber
